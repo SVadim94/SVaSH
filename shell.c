@@ -2,34 +2,44 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/wait.h>
+
 #define L_Count 20
 
-enum condition{CON_NONE,CON_AND,CON_OR;};
-enum result{RES_ERROR=-1,RES_BAD_LUCK,RES_SUCCES;};
-char path[PATH_MAX];
+typedef enum {CON_NONE,CON_AND,CON_OR} condition;
+typedef enum {RES_ERROR=-1,RES_BAD_LUCK,RES_SUCCES} result;
+
+char path[PATH_MAX],login[LOGIN_NAME_MAX];
+int fNull;
 
 char **readCommand();
 int simpleCheck(char **);
 void strFree(char **);
-int doCommand(char *);
-int coExCommand(char *,unsigned int,unsigned int);
-result command(char *,unsigned int, unsigned int,condition,result);
+int doCommand(char **);
+int coExCommand(char **,int,int);
+result command(char **,int,int,condition,result);
 
 
 int main(int argc,char **argv)
 {
 	char **cStr;
 	readlink("/proc/self/exe",path,PATH_MAX);
+	fNull=open("/dev/null",O_RDONLY);
+	if (fNull==-1)
+		puts("Can't open /dev/null! Background-mode not guaranteed!");
+	getlogin_r(login,LOGIN_NAME_MAX);
 	if (argc!=1)
 		return doCommand(argv+1);
 	while(1)
 	{
+		printf("%s:>",login);
 		cStr=readCommand();
-		doCommand(cStr);
-		free(cStr);
+		if (simpleCheck(cStr)==0)
+			doCommand(cStr);
+		strFree(cStr);
 	}
 	return 0;
 }
@@ -43,6 +53,7 @@ char **readCommand()
 	if (prev=='\n')
 		return NULL;
 	buf=malloc(sizeof(char *));
+	buf[0]=NULL;
 	if (prev=='"')
 	{
 		qFlag=1;
@@ -238,23 +249,26 @@ void strFree(char **cStr)
 	free(cStr);
 }
 
-int doCommand(char *cStr)
+int doCommand(char **cStr)
 {
 	unsigned int pos=0,bPos;
+	int pid;
 	short bgFlag,coExStatus;
+
 	while (cStr[pos]!=NULL)
 	{
 		bPos=pos;
 		bgFlag=0;
 		while(1)
 		{
-			if (cStr[pos]==NULL || strcmp(cStr[pos],';'))
+			if (cStr[pos]==NULL || strcmp(cStr[pos],";")==0)
 				break;
-			if (strcmp(cStr[pos],'&')==0)
+			if (strcmp(cStr[pos],"&")==0)
 			{
 				bgFlag=1;
 				break;
 			}
+			++pos;
 		}
 		free(cStr[pos]);
 		cStr[pos]=NULL;
@@ -266,16 +280,27 @@ int doCommand(char *cStr)
 		}
 		else
 		{
+			if ((pid=fork())==0)
+			{
+				setpgid(0,0);
+				dup2(fNull,0);
+				coExStatus=coExCommand(cStr,bPos,pos);
+				if (coExStatus)
+					return -1;
+			}
+			else
+			if (pid==-1)
+				return -1;
 			//Background Shell
 		}
 	}
 	return 0;
 }
 
-int coExCommand(char *cStr,unsigned int begin,unsigned int end)
+int coExCommand(char **cStr,int begin,int end)
 {
-	unsigned int pos=begin,bPos;
-	result prevRes;
+	int pos=begin,bPos;
+	result prevRes=1;
 	condition conCommand=CON_NONE,currCon=CON_NONE;
 	while(pos<end)
 	{
@@ -306,29 +331,27 @@ int coExCommand(char *cStr,unsigned int begin,unsigned int end)
 		if (prevRes==RES_ERROR)
 			return -1;
 	}
+	return 0;
 }
 
-result command(char *cStr,unsigned int begin, unsigned int end,condition currCon,result prevRes)
+result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 {
-	unsigned int bPos=begin,pos=end;
-	int status,pid,fin=-1,fout=-1;
+	int bPos=begin,pos=end;
+	int status=-1,pid,fin=-1,fout=-1;
 	if (prevRes==0 && currCon==CON_AND)
 		return 0;
 	if (prevRes==1 && currCon==CON_OR)
 		return 1;
-	if (strcmp(cStr[bPos],'(')==0 && strcmp(cStr[pos],')')==0)
+	if (strcmp(cStr[bPos],"(")==0 && strcmp(cStr[pos],")")==0)
 	{
 		if ((pid=fork())==0)
 		{
-			fin=open("/dev/null",O_RDONLY);
 			free(cStr[pos]);
 			cStr[pos]=NULL;
 			cStr[bPos]=realloc(cStr[bPos],PATH_MAX);
 			strcpy(cStr[bPos],path);
-			dup2(fin,0);
 			execvp(path,cStr+bPos);
 			perror("Error");
-			close(fin);
 			exit(-1);
 		}
 		else
@@ -351,7 +374,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 				fin=open(cStr[pos-3],O_RDONLY);
 				if (fin==-1)
 				{
-					perror("Error:");
+					perror("Error");
 					return RES_ERROR;
 				}
 				free(cStr[pos-4]);
@@ -363,7 +386,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 				fout=open(cStr[pos-3],O_WRONLY|O_CREAT);
 				if (fout==-1)
 				{
-					perror("Error:");
+					perror("Error");
 					return RES_ERROR;
 				}
 				free(cStr[pos-4]);
@@ -375,7 +398,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 				fout=open(cStr[pos-3],O_WRONLY|O_CREAT|O_APPEND);
 				if (fout==-1)
 				{
-					perror("Error:");
+					perror("Error");
 					return RES_ERROR;
 				}
 				free(cStr[pos-4]);
@@ -389,7 +412,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 				fin=open(cStr[pos-1],O_RDONLY);
 				if (fin==-1)
 				{
-					perror("Error:");
+					perror("Error");
 					return RES_ERROR;
 				}
 				free(cStr[pos-2]);
@@ -401,7 +424,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 				fout=open(cStr[pos-1],O_WRONLY|O_CREAT);
 				if (fout==-1)
 				{
-					perror("Error:");
+					perror("Error");
 					return RES_ERROR;
 				}
 				free(cStr[pos-2]);
@@ -413,7 +436,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 				fout=open(cStr[pos-1],O_WRONLY|O_CREAT|O_APPEND);
 				if (fout==-1)
 				{
-					perror("Error:");
+					perror("Error");
 					return RES_ERROR;
 				}
 				free(cStr[pos-2]);
@@ -424,18 +447,19 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 		{
 			int cPos=bPos;
 			int p1[2]={-1,-1},p2[2]={-1,-1};
-			while(cStr[pos]!=NULL)
+			while(cStr[cPos]!=NULL)
 			{
 				memcpy(p1,p2,2*sizeof(int));
 				pipe(p2);
+				bPos=cPos;
+				while(cStr[cPos]!=NULL && strcmp(cStr[cPos],"|"))
+					++cPos;
 				if (!pid)
 				{
 					if ((pid=fork())==0)
 					{
 						if (fin!=-1)
 							dup2(fin,0);
-						while(cStr[cPos]!=NULL || strcmp(cStr[cPos],"|"))
-							++cPos;
 						if (cStr[cPos]==NULL)
 						{
 							if (fout!=-1)
@@ -449,7 +473,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 					else
 					if (pid==-1)
 					{
-						perror("Error:");
+						perror("Error");
 						exit(-1);
 					}
 				}
@@ -458,8 +482,6 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 					if ((pid=fork())==0)
 					{
 						dup2(p1[0],0);
-						while(cStr[cPos]!=NULL || strcmp(cStr[cPos],"|"))
-							++cPos;
 						if (cStr[cPos]==NULL)
 						{
 							if (fout!=-1)
@@ -473,12 +495,13 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 					else
 					if (pid==-1)
 					{
-						perror("Error:");
+						perror("Error");
 						exit(-1);
 					}
 				}
 				close(p1[0]);
 				close(p1[1]);
+				++pos;
 			}
 			close(p2[0]);
 			close(p2[1]);
@@ -488,7 +511,7 @@ result command(char *cStr,unsigned int begin, unsigned int end,condition currCon
 		else
 		if (pid==-1)
 		{
-			perror("Error:");
+			perror("Error");
 			close(fin);
 			close(fout);
 			return RES_ERROR;
