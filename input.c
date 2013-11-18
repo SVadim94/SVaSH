@@ -3,7 +3,7 @@
 #include <string.h>
 
 char **readString();
-int simpleCheck();
+int simpleCheck(char **);
 
 int main()
 {
@@ -27,6 +27,7 @@ char **readString()
 	if (prev=='\n')
 		return NULL;
 	buf=malloc(sizeof(char *));
+	buf[0]=NULL;
 	if (prev=='"')
 	{
 		qFlag=1;
