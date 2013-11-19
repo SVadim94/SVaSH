@@ -6,39 +6,63 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 #define L_Count 20
 
 typedef enum {CON_NONE,CON_AND,CON_OR} condition;
-typedef enum {RES_ERROR=-1,RES_BAD_LUCK,RES_SUCCES} result;
+typedef enum {RES_ERROR=-1,RES_SUCCES,RES_BAD_LUCK} result;
 
-char path[PATH_MAX],login[LOGIN_NAME_MAX];
+char path[PATH_MAX],login[LOGIN_NAME_MAX],CURDIR[PATH_MAX],hostname[HOST_NAME_MAX];
 int fNull;
 
 char **readCommand();
 int simpleCheck(char **);
+void cStrCpy(char **,char ***,int count);
 void strFree(char **);
-int doCommand(char **);
-int coExCommand(char **,int,int);
+result doCommand(char **);
+result coExCommand(char **,int,int);
 result command(char **,int,int,condition,result);
 
 
 int main(int argc,char **argv)
 {
 	char **cStr;
+	signal(SIGINT,SIG_IGN);
+	signal(SIGTSTP,SIG_IGN);
 	readlink("/proc/self/exe",path,PATH_MAX);
+	getlogin_r(login,LOGIN_NAME_MAX);
+	getcwd(CURDIR,PATH_MAX);
+	gethostname(hostname,HOST_NAME_MAX);
 	fNull=open("/dev/null",O_RDONLY);
 	if (fNull==-1)
 		puts("Can't open /dev/null! Background-mode not guaranteed!");
-	getlogin_r(login,LOGIN_NAME_MAX);
 	if (argc!=1)
-		return doCommand(argv+1);
+	{
+		cStrCpy(argv,&cStr,argc);
+		return doCommand(cStr);
+	}
 	while(1)
 	{
-		printf("%s:>",login);
+		printf("%s@%s %s:>",login,hostname,CURDIR);
 		cStr=readCommand();
 		if (simpleCheck(cStr)==0)
-			doCommand(cStr);
+		{
+			if (strcmp(cStr[0],"exit")==0)
+				return 0;
+			else
+			if (strcmp(cStr[0],"cd")==0)
+			{
+				if (cStr[1]==NULL)
+					chdir(getenv("HOME"));
+				else
+					if (chdir(cStr[1])==-1)
+						perror("SVaSH");
+				getcwd(CURDIR,PATH_MAX);
+			}
+			else
+				doCommand(cStr);
+		}
 		strFree(cStr);
 	}
 	return 0;
@@ -221,83 +245,104 @@ int simpleCheck(char **cStr)
 		break;
 		case ')':
 			if (--brackets<0)
+			{
+				puts("SVaSH: Brackets disbalance");
 				return -1;
+			}
 		break;
 		case '|':
 		case '&':
 		case '>':
 			if (strlen(cStr[0])>2)
+			{
+				puts("SVaSH: Wrong usage of special symbols");
 				return -1;
+			}
 		break;
 		}
 		++cStr;
 	}
 	if (brackets)
-		return -1;
+		{
+			puts("SVaSH: Brackets disbalance");
+			return -1;
+		}
 	else
 		return 0;
+}
+
+void cStrCpy(char **source,char ***dest,int count)
+{
+	int i;
+	*dest=malloc(count*sizeof(char *));
+	for (i=0;i<count-1;++i)
+	{
+		(*dest)[i]=malloc(strlen(source[i+1])+1);
+		strcpy((*dest)[i],source[i+1]);
+	}
+	(*dest)[count-1]=NULL;
 }
 
 void strFree(char **cStr)
 {
 	char **tmp=cStr;
-	while(tmp!=NULL)
+	if (tmp!=NULL)
 	{
-		free(*tmp);
-		++tmp;
+		while(tmp[0]!=NULL)
+		{
+			free(*tmp);
+			++tmp;
+		}
+		free(cStr);
 	}
-	free(cStr);
 }
 
-int doCommand(char **cStr)
+result doCommand(char **cStr)
 {
-	unsigned int pos=0,bPos;
+	unsigned int pos=0,bPos=0;
 	int pid;
-	short bgFlag,coExStatus;
-
-	while (cStr[pos]!=NULL)
+	result coExStatus;
+	while (1)
 	{
-		bPos=pos;
-		bgFlag=0;
-		while(1)
-		{
-			if (cStr[pos]==NULL || strcmp(cStr[pos],";")==0)
-				break;
-			if (strcmp(cStr[pos],"&")==0)
-			{
-				bgFlag=1;
-				break;
-			}
-			++pos;
-		}
-		free(cStr[pos]);
-		cStr[pos]=NULL;
-		if (!bgFlag)
+		if (cStr[pos]==NULL)
 		{
 			coExStatus=coExCommand(cStr,bPos,pos);
-			if (coExStatus)
-				return -1;
+			if (coExStatus==RES_ERROR)
+				return RES_ERROR;
+			break;
 		}
 		else
+		if (strcmp(cStr[pos],";")==0)
+		{
+			free(cStr[pos]);
+			cStr[pos]=NULL;
+			coExStatus=coExCommand(cStr,bPos,pos);
+			if (coExStatus==RES_ERROR)
+				return RES_ERROR;
+			bPos=pos+1;
+		}
+		else
+		if (strcmp(cStr[pos],"&")==0)
 		{
 			if ((pid=fork())==0)
 			{
 				setpgid(0,0);
 				dup2(fNull,0);
 				coExStatus=coExCommand(cStr,bPos,pos);
-				if (coExStatus)
-					return -1;
+				if (coExStatus==RES_ERROR)
+					return RES_ERROR;
 			}
 			else
 			if (pid==-1)
-				return -1;
-			//Background Shell
+				return RES_ERROR;
+			bPos=pos+1;
 		}
+			++pos;
 	}
-	return 0;
+	return coExStatus;
 }
 
-int coExCommand(char **cStr,int begin,int end)
+result coExCommand(char **cStr,int begin,int end)
 {
 	int pos=begin,bPos;
 	result prevRes=1;
@@ -328,30 +373,33 @@ int coExCommand(char **cStr,int begin,int end)
 		cStr[pos]=NULL;
 		prevRes=command(cStr,bPos,pos,currCon,prevRes);
 		currCon=conCommand;
+		++pos;
 		if (prevRes==RES_ERROR)
-			return -1;
+			return RES_ERROR;
 	}
-	return 0;
+	return prevRes;
 }
 
 result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 {
 	int bPos=begin,pos=end;
 	int status=-1,pid,fin=-1,fout=-1;
-	if (prevRes==0 && currCon==CON_AND)
-		return 0;
-	if (prevRes==1 && currCon==CON_OR)
-		return 1;
-	if (strcmp(cStr[bPos],"(")==0 && strcmp(cStr[pos],")")==0)
+	if (prevRes==RES_BAD_LUCK && currCon==CON_AND)
+		return RES_BAD_LUCK;
+	if (prevRes==RES_SUCCES && currCon==CON_OR)
+		return RES_SUCCES;
+	if (strcmp(cStr[bPos],"(")==0 && strcmp(cStr[pos-1],")")==0)
 	{
 		if ((pid=fork())==0)
 		{
-			free(cStr[pos]);
-			cStr[pos]=NULL;
+			signal(SIGINT,SIG_DFL);
+			signal(SIGTSTP,SIG_DFL);
+			free(cStr[pos-1]);
+			cStr[pos-1]=NULL;
 			cStr[bPos]=realloc(cStr[bPos],PATH_MAX);
 			strcpy(cStr[bPos],path);
 			execvp(path,cStr+bPos);
-			perror("Error");
+			perror("SVaSH");
 			exit(-1);
 		}
 		else
@@ -374,7 +422,7 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 				fin=open(cStr[pos-3],O_RDONLY);
 				if (fin==-1)
 				{
-					perror("Error");
+					perror("SVaSH");
 					return RES_ERROR;
 				}
 				free(cStr[pos-4]);
@@ -383,10 +431,10 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 			else
 			if (strcmp(cStr[pos-4],">")==0)
 			{
-				fout=open(cStr[pos-3],O_WRONLY|O_CREAT);
+				fout=open(cStr[pos-3],O_WRONLY|O_CREAT,0660);
 				if (fout==-1)
 				{
-					perror("Error");
+					perror("SVaSH");
 					return RES_ERROR;
 				}
 				free(cStr[pos-4]);
@@ -395,10 +443,10 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 			else
 			if (strcmp(cStr[pos-4],">>")==0)
 			{
-				fout=open(cStr[pos-3],O_WRONLY|O_CREAT|O_APPEND);
+				fout=open(cStr[pos-3],O_WRONLY|O_CREAT|O_APPEND,0660);
 				if (fout==-1)
 				{
-					perror("Error");
+					perror("SVaSH");
 					return RES_ERROR;
 				}
 				free(cStr[pos-4]);
@@ -412,7 +460,7 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 				fin=open(cStr[pos-1],O_RDONLY);
 				if (fin==-1)
 				{
-					perror("Error");
+					perror("SVaSH");
 					return RES_ERROR;
 				}
 				free(cStr[pos-2]);
@@ -421,10 +469,10 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 			else
 			if (strcmp(cStr[pos-2],">")==0)
 			{
-				fout=open(cStr[pos-1],O_WRONLY|O_CREAT);
+				fout=open(cStr[pos-1],O_WRONLY|O_CREAT,0660);
 				if (fout==-1)
 				{
-					perror("Error");
+					perror("SVaSH");
 					return RES_ERROR;
 				}
 				free(cStr[pos-2]);
@@ -433,10 +481,10 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 			else
 			if (strcmp(cStr[pos-2],">>")==0)
 			{
-				fout=open(cStr[pos-1],O_WRONLY|O_CREAT|O_APPEND);
+				fout=open(cStr[pos-1],O_WRONLY|O_CREAT|O_APPEND,0660);
 				if (fout==-1)
 				{
-					perror("Error");
+					perror("SVaSH");
 					return RES_ERROR;
 				}
 				free(cStr[pos-2]);
@@ -447,6 +495,8 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 		{
 			int cPos=bPos;
 			int p1[2]={-1,-1},p2[2]={-1,-1};
+			signal(SIGINT,SIG_DFL);
+			signal(SIGTSTP,SIG_DFL);
 			while(cStr[cPos]!=NULL)
 			{
 				memcpy(p1,p2,2*sizeof(int));
@@ -466,14 +516,20 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 								dup2(fout,1);
 						}
 						else
+						{
 							dup2(p2[1],1);
+							close(p2[0]);
+							free(cStr[cPos]);
+							cStr[cPos]=NULL;
+						}
 						execvp(cStr[bPos],cStr+bPos);
+						perror("SVaSH");
 						exit(-1);
 					}
 					else
 					if (pid==-1)
 					{
-						perror("Error");
+						perror("SVaSH");
 						exit(-1);
 					}
 				}
@@ -482,42 +538,54 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 					if ((pid=fork())==0)
 					{
 						dup2(p1[0],0);
+						close(p1[1]);
 						if (cStr[cPos]==NULL)
 						{
 							if (fout!=-1)
 								dup2(fout,1);
 						}
 						else
+						{
 							dup2(p2[1],1);
+							close(p2[0]);
+							free(cStr[cPos]);
+							cStr[cPos]=NULL;
+						}
 						execvp(cStr[bPos],cStr+bPos);
+						perror("SVaSH");
 						exit(-1);
 					}
 					else
 					if (pid==-1)
 					{
-						perror("Error");
+						perror("SVaSH");
 						exit(-1);
 					}
 				}
 				close(p1[0]);
 				close(p1[1]);
-				++pos;
+				if (cStr[cPos]!=NULL)
+					++cPos;
 			}
 			close(p2[0]);
 			close(p2[1]);
 			waitpid(pid,&status,0);
-			exit(status);
+			if (status==0)
+				exit(0);
+			else
+				exit(-1);
 		}
 		else
 		if (pid==-1)
 		{
-			perror("Error");
+			perror("SVaSH");
 			close(fin);
 			close(fout);
 			return RES_ERROR;
 		}
 		else
-			wait(&status);
+			if (waitpid(pid,&status,0)==-1)
+				return RES_ERROR;
 		if (status==0)
 			return RES_SUCCES;
 		else
