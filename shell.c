@@ -100,6 +100,7 @@ char **readCommand(int *count)
 	buf[0]=NULL;
 	if (prev=='"')
 	{
+		while(getchar()!='\n');
 		free(buf);
 		*count=0;
 		return NULL;
