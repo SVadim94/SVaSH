@@ -44,6 +44,7 @@ int main(int argc,char **argv)
 	}
 	while(1)
 	{
+		waitpid(-1,NULL,WNOHANG);
 		printf("%s@%s %s:>",login,hostname,CURDIR);
 		cStr=readCommand();
 		if (simpleCheck(cStr)==0)
@@ -300,16 +301,32 @@ void strFree(char **cStr)
 result doCommand(char **cStr)
 {
 	unsigned int pos=0,bPos=0;
-	int pid;
+	int pid,bCount;
 	result coExStatus;
 	while (1)
 	{
 		if (cStr[pos]==NULL)
 		{
+			if (pos==bPos)
+				break;
 			coExStatus=coExCommand(cStr,bPos,pos);
-			if (coExStatus==RES_ERROR)
-				return RES_ERROR;
+//			if (coExStatus==RES_ERROR)
+//				return RES_ERROR;
 			break;
+		}
+		else
+		if (strcmp(cStr[pos],"(")==0)
+		{
+			bCount=1;
+			while (bCount>0)
+			{
+				++pos;
+				if (strcmp(cStr[pos],"(")==0)
+					++bCount;
+				else
+				if (strcmp(cStr[pos],")")==0)
+					--bCount;
+			}
 		}
 		else
 		if (strcmp(cStr[pos],";")==0)
@@ -317,24 +334,34 @@ result doCommand(char **cStr)
 			free(cStr[pos]);
 			cStr[pos]=NULL;
 			coExStatus=coExCommand(cStr,bPos,pos);
-			if (coExStatus==RES_ERROR)
-				return RES_ERROR;
+//			if (coExStatus==RES_ERROR)
+//				return RES_ERROR;
 			bPos=pos+1;
 		}
 		else
 		if (strcmp(cStr[pos],"&")==0)
 		{
+			free(cStr[pos]);
+			cStr[pos]=NULL;
 			if ((pid=fork())==0)
 			{
-				setpgid(0,0);
-				dup2(fNull,0);
-				coExStatus=coExCommand(cStr,bPos,pos);
-				if (coExStatus==RES_ERROR)
-					return RES_ERROR;
+				if ((pid=fork())==0)
+				{
+					setpgid(0,0);
+					dup2(fNull,0);
+					coExStatus=coExCommand(cStr,bPos,pos);
+					exit(coExStatus);
+				}
+				else
+				if (pid==-1)
+					exit(-1);
+				exit(0);
 			}
 			else
 			if (pid==-1)
-				return RES_ERROR;
+				perror("Error");
+			else
+				waitpid(pid,NULL,0);
 			bPos=pos+1;
 		}
 			++pos;
@@ -344,7 +371,7 @@ result doCommand(char **cStr)
 
 result coExCommand(char **cStr,int begin,int end)
 {
-	int pos=begin,bPos;
+	int pos=begin,bPos,bCount;
 	result prevRes=1;
 	condition conCommand=CON_NONE,currCon=CON_NONE;
 	while(pos<end)
@@ -356,6 +383,19 @@ result coExCommand(char **cStr,int begin,int end)
 			{
 				conCommand=CON_NONE;
 				break;
+			}
+			if (strcmp(cStr[pos],"(")==0)
+			{
+				bCount=1;
+				while (bCount>0)
+				{
+					++pos;
+					if (strcmp(cStr[pos],"(")==0)
+						++bCount;
+					else
+					if (strcmp(cStr[pos],")")==0)
+						--bCount;
+				}
 			}
 			if (strcmp(cStr[pos],"&&")==0)
 			{
@@ -431,7 +471,7 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 			else
 			if (strcmp(cStr[pos-4],">")==0)
 			{
-				fout=open(cStr[pos-3],O_WRONLY|O_CREAT,0660);
+				fout=open(cStr[pos-3],O_WRONLY|O_CREAT|O_TRUNC,0660);
 				if (fout==-1)
 				{
 					perror("SVaSH");
@@ -469,7 +509,7 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 			else
 			if (strcmp(cStr[pos-2],">")==0)
 			{
-				fout=open(cStr[pos-1],O_WRONLY|O_CREAT,0660);
+				fout=open(cStr[pos-1],O_WRONLY|O_CREAT|O_TRUNC,0660);
 				if (fout==-1)
 				{
 					perror("SVaSH");
