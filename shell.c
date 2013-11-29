@@ -10,26 +10,43 @@
 
 #define L_Count 20
 
-typedef enum {CON_NONE,CON_AND,CON_OR} condition;
+typedef enum {CON_NONE,CON_AND,CON_OR} condition; //Тип результата предыдущей команды в условном выполнении
 typedef enum {RES_ERROR=-1,RES_SUCCES,RES_BAD_LUCK} result;
 
 char path[PATH_MAX],login[LOGIN_NAME_MAX],CURDIR[PATH_MAX],hostname[HOST_NAME_MAX];
 int fNull;
 
-char **readCommand();
-int simpleCheck(char **);
-void cStrCpy(char **,char ***,int count);
-void strFree(char **);
-result doCommand(char **);
-result coExCommand(char **,int,int);
-result command(char **,int,int,condition,result);
+//Считывание команды и нарезка на "лексемы"
+char **readCommand(int *);
 
+//Функция простой проверки введенного выражения
+//Поддерживает баланс скобок, "тройные" управляющие символы и др.
+int simpleCheck(char **);
+
+//Функция копирования массива "лексем"
+void cStrCpy(char **,char ***,int count);
+
+//Очистка памяти
+void strFree(char **,int count);
+
+//Обработчик комманды первого уровня.
+//Нарезает массив для других функций
+result doCommand(char **);
+
+//Обработчик команд с условным выполнением
+result coExCommand(char **,int,int);
+
+//Обработчик комманд shell'а
+result command(char **,int,int,condition,result);
 
 int main(int argc,char **argv)
 {
 	char **cStr;
+	int count=0;
 	signal(SIGINT,SIG_IGN);
 	signal(SIGTSTP,SIG_IGN);
+	//В программе реализован простейший cd.
+	//Поэтому полное имя программы получается в начале
 	readlink("/proc/self/exe",path,PATH_MAX);
 	getlogin_r(login,LOGIN_NAME_MAX);
 	getcwd(CURDIR,PATH_MAX);
@@ -37,16 +54,16 @@ int main(int argc,char **argv)
 	fNull=open("/dev/null",O_RDONLY);
 	if (fNull==-1)
 		puts("Can't open /dev/null! Background-mode not guaranteed!");
-	if (argc!=1)
+	if (argc!=1) //Shell запущен из shell'a с параметрами?
 	{
 		cStrCpy(argv,&cStr,argc);
 		return doCommand(cStr);
 	}
 	while(1)
 	{
-		waitpid(-1,NULL,WNOHANG);
+//		waitpid(-1,NULL,WNOHANG);
 		printf("%s@%s %s:>",login,hostname,CURDIR);
-		cStr=readCommand();
+		cStr=readCommand(&count);
 		if (simpleCheck(cStr)==0)
 		{
 			if (strcmp(cStr[0],"exit")==0)
@@ -64,16 +81,18 @@ int main(int argc,char **argv)
 			else
 				doCommand(cStr);
 		}
-		strFree(cStr);
+		strFree(cStr,count);
 	}
 	return 0;
 }
 
-char **readCommand()
+//Формируется массив "лексем". При чтении считанный
+//символ "решает", как поступить  с предыдущим
+char **readCommand(int *count)
 {
 	char **buf=NULL,prev,c;
-	unsigned int cw=0,cl=0;
-	short eFlag=0,qFlag=0;
+	int cw=0,cl=0;
+	short eFlag=0;
 	while ((prev=getchar())==' ');
 	if (prev=='\n')
 		return NULL;
@@ -81,16 +100,13 @@ char **readCommand()
 	buf[0]=NULL;
 	if (prev=='"')
 	{
-		qFlag=1;
-		c='"';
-		prev=' ';
-		cw=-1;
+		free(buf);
+		*count=0;
+		return NULL;
 	}
 	while (!eFlag)
 	{
-		if (!qFlag)
-			c=getchar();
-		qFlag=0;
+		c=getchar();
 		switch(c)
 		{
 		case ' ':
@@ -229,6 +245,7 @@ char **readCommand()
 		}
 		prev=c;
 	}
+	*count=cw;
 	return buf;
 }
 
@@ -284,23 +301,18 @@ void cStrCpy(char **source,char ***dest,int count)
 	(*dest)[count-1]=NULL;
 }
 
-void strFree(char **cStr)
+void strFree(char **cStr,int count)
 {
-	char **tmp=cStr;
-	if (tmp!=NULL)
-	{
-		while(tmp[0]!=NULL)
-		{
-			free(*tmp);
-			++tmp;
-		}
-		free(cStr);
-	}
+	int i;
+	for (i=0;i<count;++i)
+		if(cStr[i]!=NULL)
+			free(cStr[i]);
+	free(cStr);
 }
 
 result doCommand(char **cStr)
 {
-	unsigned int pos=0,bPos=0;
+	int pos=0,bPos=0;
 	int pid,bCount;
 	result coExStatus;
 	while (1)
@@ -428,6 +440,7 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 		return RES_BAD_LUCK;
 	if (prevRes==RES_SUCCES && currCon==CON_OR)
 		return RES_SUCCES;
+	//"Скобки", т.е. Нужен запуск отдельной копии shell'a
 	if (strcmp(cStr[bPos],"(")==0 && strcmp(cStr[pos-1],")")==0)
 	{
 		if ((pid=fork())==0)
@@ -455,6 +468,7 @@ result command(char **cStr,int begin, int end,condition currCon,result prevRes)
 	}
 	else
 	{
+		//Анализ перенаправления ввода-вывода
 		if (pos-4>=bPos)
 		{
 			if (strcmp(cStr[pos-4],"<")==0)
