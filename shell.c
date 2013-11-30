@@ -51,7 +51,7 @@ int main(int argc,char **argv)
 	getlogin_r(login,LOGIN_NAME_MAX);
 	getcwd(CURDIR,PATH_MAX);
 	gethostname(hostname,HOST_NAME_MAX);
-	fNull=open("/dev/null",O_RDONLY);
+	fNull=open("/dev/null",O_RDWR);
 	if (fNull==-1)
 		puts("Can't open /dev/null! Background-mode not guaranteed!");
 	if (argc!=1) //Shell запущен из shell'a с параметрами?
@@ -95,7 +95,10 @@ char **readCommand(int *count)
 	short eFlag=0;
 	while ((prev=getchar())==' ');
 	if (prev=='\n')
+	{
+		*count=0;
 		return NULL;
+	}
 	buf=malloc(sizeof(char *));
 	buf[0]=NULL;
 	if (prev=='"')
@@ -360,8 +363,14 @@ result doCommand(char **cStr)
 			{
 				if ((pid=fork())==0)
 				{
-					setpgid(0,0);
-					dup2(fNull,0);
+					//setpgid(0,0);
+//					dup2(fNull,0);
+//					dup2(fNull,1);
+//					signal(SIGTSTP,SIG_DFL);
+//					signal(SIGINT,SIG_DFL);
+//					signal(SIGTTIN,SIG_DFL);
+//					signal(SIGTTOU,SIG_DFL);
+					printf("%d|%d||",getpid(),getppid());
 					coExStatus=coExCommand(cStr,bPos,pos);
 					exit(coExStatus);
 				}
