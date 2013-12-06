@@ -14,7 +14,7 @@ typedef enum {CON_NONE,CON_AND,CON_OR} condition; //Тип результата 
 typedef enum {RES_ERROR=-1,RES_SUCCES,RES_BAD_LUCK} result;
 
 char path[PATH_MAX],login[LOGIN_NAME_MAX],CURDIR[PATH_MAX],hostname[HOST_NAME_MAX];
-int fNull;
+//int fNull;
 
 //Считывание команды и нарезка на "лексемы"
 char **readCommand(int *);
@@ -51,9 +51,11 @@ int main(int argc,char **argv)
 	getlogin_r(login,LOGIN_NAME_MAX);
 	getcwd(CURDIR,PATH_MAX);
 	gethostname(hostname,HOST_NAME_MAX);
+/*
 	fNull=open("/dev/null",O_RDWR);
 	if (fNull==-1)
 		puts("Can't open /dev/null! Background-mode not guaranteed!");
+*/
 	if (argc!=1) //Shell запущен из shell'a с параметрами?
 	{
 		cStrCpy(argv,&cStr,argc);
@@ -363,20 +365,20 @@ result doCommand(char **cStr)
 			{
 				if ((pid=fork())==0)
 				{
-					//setpgid(0,0);
-//					dup2(fNull,0);
+					setpgid(0,0);
+/*					dup2(fNull,0);
 //					dup2(fNull,1);
 //					signal(SIGTSTP,SIG_DFL);
 //					signal(SIGINT,SIG_DFL);
 //					signal(SIGTTIN,SIG_DFL);
 //					signal(SIGTTOU,SIG_DFL);
-					printf("%d|%d||",getpid(),getppid());
-					coExStatus=coExCommand(cStr,bPos,pos);
+*/					coExStatus=coExCommand(cStr,bPos,pos);
 					exit(coExStatus);
 				}
 				else
 				if (pid==-1)
 					exit(-1);
+				usleep(100000);
 				exit(0);
 			}
 			else
